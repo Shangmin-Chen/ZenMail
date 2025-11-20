@@ -1,8 +1,3 @@
-// Debug - print for debugging
-// Serialize - turn to Json (from serde)
-// Deserialze - turn from Json (from serde)
-// Clone - make copies
-
 use serde::{Serialize, Deserialize};
 
 // REQUIREMENTS FOR Email STRUCT:
