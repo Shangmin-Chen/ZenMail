@@ -577,8 +577,7 @@ fn extract_body_parts(parsed: &mailparse::ParsedMail) -> (String, Option<String>
 ///
 /// # Note
 ///
-/// This is currently a placeholder that always returns an error. It will be
-/// implemented when the database layer is added.
+/// This is a temporary hard coded version of what get_account_config should return when given account_id. Currently has test credentials.
 async fn get_account_config(account_id: &str) -> Result<ImapConfig, String> {
     // TODO: Replace with database lookup
     Ok(ImapConfig {
