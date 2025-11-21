@@ -30,3 +30,4 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "1"
 futures = "0.3"
+mailparse = "0.16.1"

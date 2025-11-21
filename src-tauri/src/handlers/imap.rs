@@ -23,13 +23,13 @@
 //! # Ok(())
 //! # }
 //! ```
-
 use crate::error::EmailError;
 use crate::models::{Email, EmailBody, ImapConfig};
 use async_imap::Session;
 use async_native_tls::TlsStream;
 use futures::StreamExt;
 use tokio_util::compat::TokioAsyncReadCompatExt;
+use mailparse::MailHeaderMap;
 
 /// Type alias for an authenticated IMAP session over TLS.
 ///
@@ -392,11 +392,12 @@ pub async fn fetch_emails(
 ///
 /// # TODO
 ///
-/// - Add proper RFC822 parsing with the `mailparse` crate
-/// - Extract plain text and HTML parts separately
-/// - Handle multipart MIME messages correctly
-/// - Parse and expose email headers (Reply-To, Cc, Bcc, etc.)
-/// - Support attachment extraction
+/// - Parse and expose additional email headers (Reply-To, Cc, Bcc, In-Reply-To)
+/// - Support attachment extraction and metadata
+/// - Handle edge cases in email address parsing (display names, UTF-8)
+///
+/// Retrieves the complete email message including headers and body content in RFC822
+/// format, then parses it to extract all relevant fields including HTML and plain text.
 #[tauri::command]
 pub async fn fetch_email_body(
     account_id: String,
@@ -411,8 +412,9 @@ pub async fn fetch_email_body(
         .await
         .map_err(|e| EmailError::ImapConnection(e.to_string()))?;
     
+    // Fetch both RFC822 (full content) and FLAGS (read status)
     let mut messages_stream = session
-        .fetch(&email_id, "RFC822")
+        .fetch(&email_id, "RFC822 FLAGS")
         .await
         .map_err(|e| EmailError::ImapConnection(e.to_string()))?;
     
@@ -422,23 +424,69 @@ pub async fn fetch_email_body(
         .ok_or_else(|| EmailError::EmailNotFound(email_id.clone()))?
         .map_err(|e| EmailError::ImapConnection(e.to_string()))?;
     
+    // Get the raw RFC822 body
     let body = msg
         .body()
         .ok_or_else(|| EmailError::EmailNotFound(email_id.clone()))?;
     
-    let body_str = std::str::from_utf8(body)
-        .map_err(|e| EmailError::ParseError(e.to_string()))?;
+    // Get read status from flags
+    let is_read = msg.flags().any(|f| matches!(f, async_imap::types::Flag::Seen));
+    
+    // Parse the RFC822 email
+    let parsed = mailparse::parse_mail(body)
+        .map_err(|e| EmailError::ParseError(format!("Failed to parse email: {}", e)))?;
+    
+    // Extract headers
+    let subject = parsed
+        .headers
+        .get_first_value("Subject")
+        .unwrap_or_else(|| "(No Subject)".to_string());
+    
+    let from = parsed
+        .headers
+        .get_first_value("From")
+        .unwrap_or_else(|| "Unknown".to_string());
+    
+    let date = parsed
+        .headers
+        .get_first_value("Date")
+        .unwrap_or_default();
+    
+    // Extract To addresses
+    let to = parsed
+        .headers
+        .get_first_value("To")
+        .map(|to_str| {
+            // Simple split by comma - can be improved with proper email parsing
+            to_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    
+    // Extract body parts (both plain text and HTML)
+    let (body_text, body_html) = extract_body_parts(&parsed);
+    
+    // Generate preview from plain text (first 200 chars)
+    let preview = body_text
+        .chars()
+        .take(200)
+        .collect::<String>()
+        .trim()
+        .to_string();
     
     let email_body = EmailBody {
         id: email_id,
-        subject: "Parsed Subject".to_string(),
-        from: "Parsed From".to_string(),
-        date: "Parsed Date".to_string(),
-        preview: "Preview text".to_string(),
-        to: vec![],
-        is_read: true,
-        body_text: body_str.to_string(),
-        body_html: None,
+        subject,
+        from,
+        date,
+        preview,
+        to,
+        is_read,
+        body_text,
+        body_html,
     };
     
     drop(messages_stream);
@@ -449,6 +497,57 @@ pub async fn fetch_email_body(
         .map_err(|e| EmailError::ImapConnection(e.to_string()))?;
     
     Ok(email_body)
+}
+
+/// Extracts plain text and HTML body parts from a parsed email.
+///
+/// Handles multipart MIME messages by recursively searching for text/plain
+/// and text/html parts. Returns (plain_text, html_option).
+fn extract_body_parts(parsed: &mailparse::ParsedMail) -> (String, Option<String>) {
+    let mut plain_text = String::new();
+    let mut html_text: Option<String> = None;
+    
+    // Recursive function to walk through all parts
+    fn extract_parts(part: &mailparse::ParsedMail, plain: &mut String, html: &mut Option<String>) {
+        match part.ctype.mimetype.as_str() {
+            "text/plain" => {
+                if let Ok(text) = part.get_body() {
+                    if !plain.is_empty() {
+                        plain.push_str("\n\n");
+                    }
+                    plain.push_str(&text);
+                }
+            }
+            "text/html" => {
+                if let Ok(text) = part.get_body() {
+                    // Store the first HTML part we find
+                    if html.is_none() {
+                        *html = Some(text);
+                    }
+                }
+            }
+            // For multipart messages, recursively check subparts
+            mime if mime.starts_with("multipart/") => {
+                for subpart in &part.subparts {
+                    extract_parts(subpart, plain, html);
+                }
+            }
+            _ => {
+                // Other content types (images, attachments, etc.) - ignore for now
+            }
+        }
+    }
+    
+    extract_parts(parsed, &mut plain_text, &mut html_text);
+    
+    // If we didn't find any text/plain part, try to get body from the main part
+    if plain_text.is_empty() {
+        if let Ok(body) = parsed.get_body() {
+            plain_text = body;
+        }
+    }
+    
+    (plain_text, html_text)
 }
 
 /// Retrieves IMAP configuration for a specific account.
@@ -481,7 +580,13 @@ pub async fn fetch_email_body(
 /// This is currently a placeholder that always returns an error. It will be
 /// implemented when the database layer is added.
 async fn get_account_config(account_id: &str) -> Result<ImapConfig, String> {
-    Err(EmailError::AccountNotFound(account_id.to_string()).into())
+    // TODO: Replace with database lookup
+    Ok(ImapConfig {
+        hostname: "imap.gmail.com".to_string(),
+        port: 993,
+        email: std::env::var("TEST_GMAIL_EMAIL").map_err(|_| "Email not configured")?,
+        password: std::env::var("TEST_GMAIL_APP_PASSWORD").map_err(|_| "Password not configured")?,
+    })
 }
 
 #[cfg(test)]
@@ -620,15 +725,21 @@ mod tests {
         }
     }
 
-    /// Tests that account lookup returns appropriate error for non-existent accounts.
+    /// Tests that account config can be retrieved from environment variables.
     #[tokio::test]
-    async fn test_account_not_found_error() {
-        let result = get_account_config("nonexistent_id").await;
-        assert!(result.is_err());
+    async fn test_get_account_config() {
+        // Skip test if environment variables aren't set
+        if std::env::var("TEST_GMAIL_EMAIL").is_err() {
+            println!("Skipping test - TEST_GMAIL_EMAIL not set");
+            return;
+        }
         
-        let error_msg = result.unwrap_err();
-        assert!(error_msg.contains("Account"));
-        assert!(error_msg.contains("nonexistent_id"));
+        let result = get_account_config("any_id").await;
+        assert!(result.is_ok(), "Failed to get account config: {:?}", result.err());
+        
+        let config = result.unwrap();
+        assert_eq!(config.hostname, "imap.gmail.com");
+        assert_eq!(config.port, 993);
     }
 
     /// Tests password sanitization (space removal).
