@@ -24,9 +24,25 @@ pub enum EmailError {
     ParseError(String),
 }
 
-// Convert to String for Tauri commands
 impl From<EmailError> for String {
     fn from(error: EmailError) -> Self {
         error.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_to_string() {
+        let err = EmailError::AuthenticationFailed;
+        assert_eq!(err.to_string(), "Authentication failed");
+    }
+
+    #[test]
+    fn test_error_with_context() {
+        let err = EmailError::AccountNotFound("test123".to_string());
+        assert!(err.to_string().contains("test123"));
     }
 }

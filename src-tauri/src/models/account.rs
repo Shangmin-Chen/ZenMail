@@ -21,8 +21,8 @@ pub struct Account {
 // 4. Needs: email, password, IMAP server/port, SMTP server/port
 // 5. Should NOT be Clone (contains sensitive data) 
 
-// - Email, password, hostnames are text → String
-// - Port numbers are 0-65535 → u16
+// - Email, password, hostnames are text -> String
+// - Port numbers are 0-65535 -> u16
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AccountConfig {
