@@ -6,7 +6,7 @@ mod models;
 
 use handlers::imap::{connect_imap, fetch_emails, fetch_email_body};
 // use handlers::account::{test_connection, save_account, get_accounts};
-// use handlers::smtp::send_email;
+use handlers::smtp::{connect_smtp, send_email};
 
 
 fn main() {
@@ -18,7 +18,8 @@ fn main() {
             fetch_emails,
             fetch_email_body,
             // // SMTP handlers
-            // send_email,
+            handlers::smtp::connect_smtp,
+            handlers::smtp::send_email,
             // // Account handlers
             // test_connection,
             // save_account,
